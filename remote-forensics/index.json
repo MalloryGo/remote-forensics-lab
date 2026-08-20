@@ -1,0 +1,6 @@
+{
+  "title": "Remote Forensics Test",
+  "backend": {
+    "imageid": "ubuntu"
+  }
+}
