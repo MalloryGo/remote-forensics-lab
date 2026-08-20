@@ -1,6 +1,6 @@
 {
-  "title": "Remote Forensics Test",
-  "description": "Two-host remote forensics isolation prototype",
+  "title": "Telecom Fraud Remote Forensics",
+  "description": "Two-host remote examination target for the electronic-evidence competition",
   "details": {
     "intro": {
       "text": "intro.md",
