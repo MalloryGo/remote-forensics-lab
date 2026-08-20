@@ -20,11 +20,12 @@ echo '=== Remote Forensics Creator Check ==='
 echo "Target: $TARGET"
 echo
 
-# Q1 / network surface. The competition question scans TCP 1000-9999.
+# Q1: number of open TCP ports in 1-9999. Final answer = 9.
 if command -v nmap >/dev/null 2>&1; then
-  OPEN_Q1="$(nmap -Pn -p1000-9999 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{sub("/tcp","",$1); print $1}' | paste -sd, -)"
-  EXPECTED_Q1='3306,8080,8888,9090'
-  if [ "$OPEN_Q1" = "$EXPECTED_Q1" ]; then ok 'Q1 TCP 1000-9999 exposes exactly four challenge ports'; else bad "Q1 port set differs: got [$OPEN_Q1], expected [$EXPECTED_Q1]"; fi
+  OPEN_Q1="$(nmap -Pn -p1-9999 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{sub("/tcp","",$1); print $1}' | paste -sd, -)"
+  EXPECTED_Q1='22,25,80,3306,4240,8080,8888,9090,9964'
+  OPEN_COUNT="$(printf '%s' "$OPEN_Q1" | awk -F, '{if ($0=="") print 0; else print NF}')"
+  if [ "$OPEN_Q1" = "$EXPECTED_Q1" ] && [ "$OPEN_COUNT" = 9 ]; then ok 'Q1 has exactly 9 open TCP ports in 1-9999'; else bad "Q1 ports differ: got [$OPEN_Q1] count=$OPEN_COUNT"; fi
 
   KUBE_OPEN="$(nmap -Pn -p2379,2380,6443,10250,10255,10257,10259 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{print $1}' | paste -sd, -)"
   if [ -z "$KUBE_OPEN" ]; then ok 'Kubernetes management ports are closed'; else bad "Unexpected Kubernetes ports open: $KUBE_OPEN"; fi
@@ -32,7 +33,6 @@ else
   bad 'nmap is unavailable'
 fi
 
-# Public web routes.
 PUBLIC_ROUTES=(/ /wallet/ /task/ /market/ /merchant/ /support/ /download/ /static/app-config.js /api/v2/status)
 PUBLIC_BAD=0
 for r in "${PUBLIC_ROUTES[@]}"; do
@@ -41,7 +41,6 @@ for r in "${PUBLIC_ROUTES[@]}"; do
 done
 if [ "$PUBLIC_BAD" -eq 0 ]; then ok 'Public website routes return HTTP 200'; else bad 'One or more public routes failed'; fi
 
-# Q2 clue: readable frontend config -> /administrator/ + login.php.
 JS="$(curl -fsS --max-time 5 "$BASE/static/app-config.js" 2>/dev/null || true)"
 if printf '%s' "$JS" | grep -q 'consoleBase: "/administrator/"' && printf '%s' "$JS" | grep -q 'consoleEntry: "login.php"'; then
   ok 'Q2 frontend config contains consoleBase and consoleEntry'
@@ -53,7 +52,6 @@ C1="$(http_code "$BASE/admin/login.php")"
 C2="$(http_code "$BASE/manage/login.php")"
 if [ "$C1" = 410 ] && [ "$C2" = 410 ]; then ok 'Legacy admin decoys return HTTP 410'; else bad "Legacy decoy status unexpected: admin=$C1 manage=$C2"; fi
 
-# Admin login and authenticated routes.
 LOGIN_HEADERS="$TMPDIR/login.headers"
 curl -sS --max-time 5 -D "$LOGIN_HEADERS" -o /dev/null -c "$COOKIE" \
   -d 'username=admin&password=Aa123456' "$BASE/administrator/login.php" || true
@@ -71,7 +69,6 @@ for r in "${ADMIN_ROUTES[@]}"; do
 done
 if [ "$ADMIN_BAD" -eq 0 ]; then ok 'All authenticated administrator routes return HTTP 200'; else bad 'One or more administrator routes failed'; fi
 
-# Q4 should now be solvable from one audit row after hashing the supplied file.
 AUDIT_HTML="$(curl -fsS --max-time 5 -b "$COOKIE" "$BASE/administrator/import-audit.php" 2>/dev/null || true)"
 Q4_HASH='0066ac9361cfe37c0cc7e42b61f34edd632fe93857f6b83fa26ab0b476b2dd14'
 if printf '%s' "$AUDIT_HTML" | grep -q "$Q4_HASH" && printf '%s' "$AUDIT_HTML" | grep -q 'kf03' && printf '%s' "$AUDIT_HTML" | grep -q '>76<'; then
@@ -80,7 +77,6 @@ else
   bad 'Q4 simplified audit row is incomplete'
 fi
 
-# Downloadable evidence files.
 CUSTOMER_DB="$TMPDIR/customer_relation.db"
 AUDIT_DB="$TMPDIR/import_audit.db"
 SCRIPT_TXT="$TMPDIR/script.txt"
