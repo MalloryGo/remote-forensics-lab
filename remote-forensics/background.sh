@@ -81,9 +81,28 @@ nohup python3 /opt/remote-forensics/tcp_services.py >/var/log/wh838-services.log
 nohup python3 -m http.server 80 --bind 0.0.0.0 --directory "$BASE/landing" >/var/log/wh838-gateway.log 2>&1 </dev/null &
 sleep 2
 
-if command -v iptables >/dev/null 2>&1; then
-  iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp -j REJECT --reject-with tcp-reset 2>/dev/null || true
-  for p in 22 80 3306 8080 8888 9090; do iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true; done
+# Hide Killercoda/base-image services from the contestant workstation without
+# stopping platform daemons. Prefer nftables and fall back to iptables.
+if command -v nft >/dev/null 2>&1; then
+  nft delete table inet remote_forensics_filter >/dev/null 2>&1 || true
+  nft -f - <<NFT
+ table inet remote_forensics_filter {
+   chain input {
+     type filter hook input priority -20; policy accept;
+     ip saddr $WORKSTATION_IP tcp dport { 22, 80, 3306, 8080, 8888, 9090 } accept
+     ip saddr $WORKSTATION_IP tcp reject with tcp reset
+   }
+ }
+NFT
+elif command -v iptables >/dev/null 2>&1; then
+  while iptables -D INPUT -s "$WORKSTATION_IP" -p tcp -j REJECT --reject-with tcp-reset >/dev/null 2>&1; do :; done
+  for p in 22 80 3306 8080 8888 9090; do
+    while iptables -D INPUT -s "$WORKSTATION_IP" -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1; do :; done
+  done
+  iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp -j REJECT --reject-with tcp-reset
+  for p in 22 80 3306 8080 8888 9090; do
+    iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp --dport "$p" -j ACCEPT
+  done
 fi
 
 mkdir -p /etc/ssh/sshd_config.d
