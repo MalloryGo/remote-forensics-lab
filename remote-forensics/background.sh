@@ -17,10 +17,8 @@ curl -fsSL "$RAW_BASE/tcp_services.py" -o /tmp/remote-forensics-assets/tcp_servi
 curl -fsSL "$RAW_BASE/tcp_forward.py" -o /tmp/remote-forensics-assets/tcp_forward.py
 
 # Competition tuning:
-# Q2 uses a conventional /administrator/login.php path. Contestants discover it
-# from a small readable frontend configuration file by joining consoleBase + consoleEntry.
-# Q4 keeps the file-hash correlation step but displays the matched operator/counts
-# directly in the import-audit page, so no second database-table join is required.
+# Q2: conventional administrator path, discovered from a small readable JS config.
+# Q4: keep SHA-256 matching, but show the matched operator/counts directly in audit.
 python3 - <<'PY'
 from pathlib import Path
 import re
@@ -28,14 +26,10 @@ import re
 p = Path('/tmp/remote-forensics-assets/target_app.py')
 s = p.read_text(encoding='utf-8')
 
-# Use one conventional administrator namespace throughout the mock backend.
 s = s.replace('/ops-center/', '/administrator/')
 s = s.replace('gateway-7f3a.php', 'login.php')
-
-# Give the frontend bundle a readable, ordinary filename.
 s = s.replace('/static/app.8f31.js', '/static/app-config.js')
 
-# Replace the minified bundle with a short readable config file.
 js_pattern = re.compile(
     r"        if p == '/static/app-config\.js':\n"
     r"            js = b'''[\s\S]*?'''\n"
@@ -43,24 +37,22 @@ js_pattern = re.compile(
     r"            return\n",
     re.M,
 )
-js_replacement = '''        if p == '/static/app-config.js':
+js_replacement = """        if p == '/static/app-config.js':
             js = b'''window.APP_CONFIG = {\n  apiBase: "/api/v2/",\n  consoleBase: "/administrator/",\n  consoleEntry: "login.php",\n  version: "2026.04.3"\n};\n'''
             self.out(js, ctype='application/javascript; charset=utf-8')
             return
-'''
+"""
 s, n = js_pattern.subn(js_replacement, s, count=1)
 if n != 1:
     raise SystemExit('Q2 JS patch anchor not found')
 
-# Make Q4 slightly easier: after the contestant computes the local file SHA-256,
-# the matching audit row itself contains the operator and import counts.
 audit_pattern = re.compile(
     r"        if p == '/administrator/import-audit\.php':\n[\s\S]*?"
     r"            self\.out\(page\('导入审计', body, 'admin'\)\)\n"
     r"            return\n",
     re.M,
 )
-audit_replacement = '''        if p == '/administrator/import-audit.php':
+audit_replacement = """        if p == '/administrator/import-audit.php':
             con = sqlite3.connect(AUDIT_DB)
             rows = con.execute('''SELECT j.job_id,j.archive_name,j.file_sha256,s.username,j.total_count,j.success_count,j.failed_count,j.state,j.finished_at FROM import_jobs j LEFT JOIN operator_sessions s ON j.upload_sid=s.session_id ORDER BY j.finished_at DESC''').fetchall()
             con.close()
@@ -68,7 +60,7 @@ audit_replacement = '''        if p == '/administrator/import-audit.php':
             body = f'''<h2>客户资料导入审计</h2><p class="muted">同名文件可能存在多个版本，请以原始文件 SHA-256 核对对应导入记录。</p><table><tr><th>任务ID</th><th>文件名</th><th>SHA-256</th><th>操作账号</th><th>总数</th><th>成功</th><th>失败</th><th>状态</th><th>完成时间</th></tr>{tr}</table><div class="card"><b>审计存档</b><p>如需进一步复核，可下载原始审计数据库。</p><a href="/download/import_audit.db">下载 import_audit.db</a></div>'''
             self.out(page('导入审计', body, 'admin'))
             return
-'''
+"""
 s, n = audit_pattern.subn(audit_replacement, s, count=1)
 if n != 1:
     raise SystemExit('Q4 audit patch anchor not found')
@@ -147,6 +139,17 @@ pkill -f 'kube-controller-manager' 2>/dev/null || true
 pkill -f 'kube-scheduler' 2>/dev/null || true
 pkill -f 'etcd.*--' 2>/dev/null || true
 rm -f /root/.kube/config /etc/kubernetes/admin.conf 2>/dev/null || true
+
+# Killercoda exposes two platform-side ports (4240 and 9964) that are unrelated
+# to this examination target. Hide them only from the contestant workstation so
+# the original Q1 scan of TCP 1000-9999 consistently returns the four challenge
+# services: 3306, 8080, 8888 and 9090. Platform processes themselves are untouched.
+if command -v iptables >/dev/null 2>&1; then
+  for p in 4240 9964; do
+    while iptables -D OUTPUT -d "$TARGET_IP" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset >/dev/null 2>&1; do :; done
+    iptables -I OUTPUT 1 -d "$TARGET_IP" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset
+  done
+fi
 
 install -m 700 /tmp/remote-forensics-assets/tcp_forward.py /opt/remote-forensics-forward.py
 pkill -f '/opt/remote-forensics-forward.py' 2>/dev/null || true
