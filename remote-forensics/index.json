@@ -1,6 +1,6 @@
 {
   "title": "Remote Forensics Test",
   "backend": {
-    "imageid": "ubuntu"
+    "imageid": "kubernetes-kubeadm-2nodes"
   }
 }
