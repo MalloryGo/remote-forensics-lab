@@ -15,6 +15,21 @@ mkdir -p /tmp/remote-forensics-assets
 curl -fsSL "$RAW_BASE/target_app.py" -o /tmp/remote-forensics-assets/target_app.py
 curl -fsSL "$RAW_BASE/tcp_services.py" -o /tmp/remote-forensics-assets/tcp_services.py
 curl -fsSL "$RAW_BASE/tcp_forward.py" -o /tmp/remote-forensics-assets/tcp_forward.py
+
+# Q2 difficulty tuning: expose the migrated console path in the ordinary frontend bundle.
+# Contestants only need to inspect the JS loaded by the H5 page; the source map remains
+# as an alternate route, but is no longer required.
+python3 - <<'PY'
+from pathlib import Path
+p = Path('/tmp/remote-forensics-assets/target_app.py')
+s = p.read_text(encoding='utf-8')
+old = 'js = b\'\'\'(()=>{const e={api:"/api/v2/",build:"2026.04.3",region:"asia-03"};window.WH838=e;})();\\n//# sourceMappingURL=/static/app.8f31.js.map\\n\'\'\''
+new = 'js = b\'\'\'(()=>{const e={api:"/api/v2/",build:"2026.04.3",region:"asia-03",consoleBase:"/ops-center/",consoleEntry:"gateway-7f3a.php"};window.WH838=e;})();\\n//# sourceMappingURL=/static/app.8f31.js.map\\n\'\'\''
+if old not in s:
+    raise SystemExit('Q2 patch anchor not found in target_app.py')
+p.write_text(s.replace(old, new, 1), encoding='utf-8')
+PY
+
 scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/target_app.py "$TARGET_HOST:/tmp/target_app.py"
 scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/tcp_services.py "$TARGET_HOST:/tmp/tcp_services.py"
 
