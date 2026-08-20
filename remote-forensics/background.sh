@@ -140,17 +140,6 @@ pkill -f 'kube-scheduler' 2>/dev/null || true
 pkill -f 'etcd.*--' 2>/dev/null || true
 rm -f /root/.kube/config /etc/kubernetes/admin.conf 2>/dev/null || true
 
-# Killercoda exposes two platform-side ports (4240 and 9964) that are unrelated
-# to this examination target. Hide them only from the contestant workstation so
-# the original Q1 scan of TCP 1000-9999 consistently returns the four challenge
-# services: 3306, 8080, 8888 and 9090. Platform processes themselves are untouched.
-if command -v iptables >/dev/null 2>&1; then
-  for p in 4240 9964; do
-    while iptables -D OUTPUT -d "$TARGET_IP" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset >/dev/null 2>&1; do :; done
-    iptables -I OUTPUT 1 -d "$TARGET_IP" -p tcp --dport "$p" -j REJECT --reject-with tcp-reset
-  done
-fi
-
 install -m 700 /tmp/remote-forensics-assets/tcp_forward.py /opt/remote-forensics-forward.py
 pkill -f '/opt/remote-forensics-forward.py' 2>/dev/null || true
 nohup python3 /opt/remote-forensics-forward.py >/var/log/remote-forensics-forward.log 2>&1 </dev/null &
