@@ -2,7 +2,6 @@
 set -u
 TARGET_HOST="node01"
 TARGET_IP="172.30.2.2"
-WORKSTATION_IP="172.30.1.2"
 STATUS_FILE="/tmp/remote-forensics-setup-status.txt"
 RAW_BASE="https://raw.githubusercontent.com/MalloryGo/remote-forensics-lab/main/remote-forensics"
 
@@ -16,57 +15,10 @@ curl -fsSL "$RAW_BASE/target_app.py" -o /tmp/remote-forensics-assets/target_app.
 curl -fsSL "$RAW_BASE/tcp_services.py" -o /tmp/remote-forensics-assets/tcp_services.py
 curl -fsSL "$RAW_BASE/tcp_forward.py" -o /tmp/remote-forensics-assets/tcp_forward.py
 
-# Competition tuning:
-# Q2: conventional administrator path, discovered from a small readable JS config.
-# Q4: keep SHA-256 matching, but show the matched operator/counts directly in audit.
-python3 - <<'PY'
-from pathlib import Path
-import re
-
-p = Path('/tmp/remote-forensics-assets/target_app.py')
-s = p.read_text(encoding='utf-8')
-
-s = s.replace('/ops-center/', '/administrator/')
-s = s.replace('gateway-7f3a.php', 'login.php')
-s = s.replace('/static/app.8f31.js', '/static/app-config.js')
-
-js_pattern = re.compile(
-    r"        if p == '/static/app-config\.js':\n"
-    r"            js = b'''[\s\S]*?'''\n"
-    r"            self\.out\(js, ctype='application/javascript; charset=utf-8'\)\n"
-    r"            return\n",
-    re.M,
-)
-js_replacement = """        if p == '/static/app-config.js':
-            js = b'''window.APP_CONFIG = {\n  apiBase: "/api/v2/",\n  consoleBase: "/administrator/",\n  consoleEntry: "login.php",\n  version: "2026.04.3"\n};\n'''
-            self.out(js, ctype='application/javascript; charset=utf-8')
-            return
-"""
-s, n = js_pattern.subn(js_replacement, s, count=1)
-if n != 1:
-    raise SystemExit('Q2 JS patch anchor not found')
-
-audit_pattern = re.compile(
-    r"        if p == '/administrator/import-audit\.php':\n[\s\S]*?"
-    r"            self\.out\(page\('导入审计', body, 'admin'\)\)\n"
-    r"            return\n",
-    re.M,
-)
-audit_replacement = """        if p == '/administrator/import-audit.php':
-            con = sqlite3.connect(AUDIT_DB)
-            rows = con.execute('''SELECT j.job_id,j.archive_name,j.file_sha256,s.username,j.total_count,j.success_count,j.failed_count,j.state,j.finished_at FROM import_jobs j LEFT JOIN operator_sessions s ON j.upload_sid=s.session_id ORDER BY j.finished_at DESC''').fetchall()
-            con.close()
-            tr = ''.join(f'<tr><td>{html.escape(r[0])}</td><td>{html.escape(r[1])}</td><td><code>{html.escape(r[2])}</code></td><td>{html.escape(r[3] or "-")}</td><td>{r[4]}</td><td>{r[5]}</td><td>{r[6]}</td><td>{html.escape(r[7])}</td><td>{html.escape(r[8])}</td></tr>' for r in rows)
-            body = f'''<h2>客户资料导入审计</h2><p class="muted">同名文件可能存在多个版本，请以原始文件 SHA-256 核对对应导入记录。</p><table><tr><th>任务ID</th><th>文件名</th><th>SHA-256</th><th>操作账号</th><th>总数</th><th>成功</th><th>失败</th><th>状态</th><th>完成时间</th></tr>{tr}</table><div class="card"><b>审计存档</b><p>如需进一步复核，可下载原始审计数据库。</p><a href="/download/import_audit.db">下载 import_audit.db</a></div>'''
-            self.out(page('导入审计', body, 'admin'))
-            return
-"""
-s, n = audit_pattern.subn(audit_replacement, s, count=1)
-if n != 1:
-    raise SystemExit('Q4 audit patch anchor not found')
-
-p.write_text(s, encoding='utf-8')
-PY
+# Fail early if the downloaded target app does not match the frozen challenge contract.
+grep -q "LOGIN_PATH = '/administrator/login.php'" /tmp/remote-forensics-assets/target_app.py || { echo 'target_app login path mismatch' >&2; exit 1; }
+grep -q 'consoleBase: "/administrator/"' /tmp/remote-forensics-assets/target_app.py || { echo 'target_app JS clue mismatch' >&2; exit 1; }
+grep -q "PROFILE_FLAG = 'flag{991c4becc9a979aa096b23d0065f3f02}'" /tmp/remote-forensics-assets/target_app.py || { echo 'target_app profile flag mismatch' >&2; exit 1; }
 
 scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/target_app.py "$TARGET_HOST:/tmp/target_app.py"
 scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/tcp_services.py "$TARGET_HOST:/tmp/tcp_services.py"
@@ -132,7 +84,10 @@ REMOTE
 
 systemctl mask --now kubelet >/dev/null 2>&1 || true
 if command -v crictl >/dev/null 2>&1; then
-  for name in kube-apiserver kube-controller-manager kube-scheduler etcd; do ids="$(crictl ps --name "$name" -q 2>/dev/null || true)"; [ -z "$ids" ] || crictl stop $ids >/dev/null 2>&1 || true; done
+  for name in kube-apiserver kube-controller-manager kube-scheduler etcd; do
+    ids="$(crictl ps --name "$name" -q 2>/dev/null || true)"
+    [ -z "$ids" ] || crictl stop $ids >/dev/null 2>&1 || true
+  done
 fi
 pkill -f 'kube-apiserver' 2>/dev/null || true
 pkill -f 'kube-controller-manager' 2>/dev/null || true
@@ -153,7 +108,8 @@ The competition questions and answer submission are provided by the external com
 EOF
 sleep 2
 {
- echo "target_ip=$TARGET_IP"; echo "configured_at=$(date -Is)"
+ echo "target_ip=$TARGET_IP"
+ echo "configured_at=$(date -Is)"
  curl -fsS --max-time 4 "http://$TARGET_IP:8080/" >/dev/null 2>&1 && echo "web=ok" || echo "web=failed"
  timeout 3 bash -c "</dev/tcp/$TARGET_IP/3306" 2>/dev/null && echo "tcp_services=ok" || echo "tcp_services=failed"
  if ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=no root@"$TARGET_IP" true >/dev/null 2>&1; then echo "root_ssh=FAILED_OPEN"; else echo "root_ssh=blocked"; fi
