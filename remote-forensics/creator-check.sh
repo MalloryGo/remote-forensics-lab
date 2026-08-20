@@ -20,12 +20,12 @@ echo '=== Remote Forensics Creator Check ==='
 echo "Target: $TARGET"
 echo
 
-# Q1: number of open TCP ports in 1-9999. Final answer = 9.
+# Q1: count open TCP ports in 1000-9999 inclusive. Final answer = 6.
 if command -v nmap >/dev/null 2>&1; then
-  OPEN_Q1="$(nmap -Pn -p1-9999 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{sub("/tcp","",$1); print $1}' | paste -sd, -)"
-  EXPECTED_Q1='22,25,80,3306,4240,8080,8888,9090,9964'
+  OPEN_Q1="$(nmap -Pn -p1000-9999 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{sub("/tcp","",$1); print $1}' | paste -sd, -)"
+  EXPECTED_Q1='3306,4240,8080,8888,9090,9964'
   OPEN_COUNT="$(printf '%s' "$OPEN_Q1" | awk -F, '{if ($0=="") print 0; else print NF}')"
-  if [ "$OPEN_Q1" = "$EXPECTED_Q1" ] && [ "$OPEN_COUNT" = 9 ]; then ok 'Q1 has exactly 9 open TCP ports in 1-9999'; else bad "Q1 ports differ: got [$OPEN_Q1] count=$OPEN_COUNT"; fi
+  if [ "$OPEN_Q1" = "$EXPECTED_Q1" ] && [ "$OPEN_COUNT" = 6 ]; then ok 'Q1 has exactly 6 open TCP ports in 1000-9999'; else bad "Q1 ports differ: got [$OPEN_Q1] count=$OPEN_COUNT"; fi
 
   KUBE_OPEN="$(nmap -Pn -p2379,2380,6443,10250,10255,10257,10259 --open "$TARGET" 2>/dev/null | awk '/^[0-9]+\/tcp[[:space:]]+open/{print $1}' | paste -sd, -)"
   if [ -z "$KUBE_OPEN" ]; then ok 'Kubernetes management ports are closed'; else bad "Unexpected Kubernetes ports open: $KUBE_OPEN"; fi
@@ -68,6 +68,10 @@ for r in "${ADMIN_ROUTES[@]}"; do
   [ "$code" = 200 ] || { printf '  admin %-24s -> %s\n' "$r" "$code"; ADMIN_BAD=1; }
 done
 if [ "$ADMIN_BAD" -eq 0 ]; then ok 'All authenticated administrator routes return HTTP 200'; else bad 'One or more administrator routes failed'; fi
+
+PROFILE_HTML="$(curl -fsS --max-time 5 -b "$COOKIE" "$BASE/administrator/profile.php" 2>/dev/null || true)"
+EXPECTED_FLAG='flag{991c4becc9a979aa096b23d0065f3f02}'
+if printf '%s' "$PROFILE_HTML" | grep -q "$EXPECTED_FLAG"; then ok 'Q3 profile flag matches expected value'; else bad 'Q3 profile flag is missing or changed'; fi
 
 AUDIT_HTML="$(curl -fsS --max-time 5 -b "$COOKIE" "$BASE/administrator/import-audit.php" 2>/dev/null || true)"
 Q4_HASH='0066ac9361cfe37c0cc7e42b61f34edd632fe93857f6b83fa26ab0b476b2dd14'
