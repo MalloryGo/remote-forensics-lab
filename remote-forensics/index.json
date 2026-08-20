@@ -1,5 +1,12 @@
 {
   "title": "Remote Forensics Test",
+  "description": "Two-host remote forensics isolation prototype",
+  "details": {
+    "intro": {
+      "text": "intro.md",
+      "background": "background.sh"
+    }
+  },
   "backend": {
     "imageid": "kubernetes-kubeadm-2nodes"
   }
