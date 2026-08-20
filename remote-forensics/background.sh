@@ -16,18 +16,64 @@ curl -fsSL "$RAW_BASE/target_app.py" -o /tmp/remote-forensics-assets/target_app.
 curl -fsSL "$RAW_BASE/tcp_services.py" -o /tmp/remote-forensics-assets/tcp_services.py
 curl -fsSL "$RAW_BASE/tcp_forward.py" -o /tmp/remote-forensics-assets/tcp_forward.py
 
-# Q2 difficulty tuning: expose the migrated console path in the ordinary frontend bundle.
-# Contestants only need to inspect the JS loaded by the H5 page; the source map remains
-# as an alternate route, but is no longer required.
+# Competition tuning:
+# Q2 uses a conventional /administrator/login.php path. Contestants discover it
+# from a small readable frontend configuration file by joining consoleBase + consoleEntry.
+# Q4 keeps the file-hash correlation step but displays the matched operator/counts
+# directly in the import-audit page, so no second database-table join is required.
 python3 - <<'PY'
 from pathlib import Path
+import re
+
 p = Path('/tmp/remote-forensics-assets/target_app.py')
 s = p.read_text(encoding='utf-8')
-old = 'js = b\'\'\'(()=>{const e={api:"/api/v2/",build:"2026.04.3",region:"asia-03"};window.WH838=e;})();\\n//# sourceMappingURL=/static/app.8f31.js.map\\n\'\'\''
-new = 'js = b\'\'\'(()=>{const e={api:"/api/v2/",build:"2026.04.3",region:"asia-03",consoleBase:"/ops-center/",consoleEntry:"gateway-7f3a.php"};window.WH838=e;})();\\n//# sourceMappingURL=/static/app.8f31.js.map\\n\'\'\''
-if old not in s:
-    raise SystemExit('Q2 patch anchor not found in target_app.py')
-p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+# Use one conventional administrator namespace throughout the mock backend.
+s = s.replace('/ops-center/', '/administrator/')
+s = s.replace('gateway-7f3a.php', 'login.php')
+
+# Give the frontend bundle a readable, ordinary filename.
+s = s.replace('/static/app.8f31.js', '/static/app-config.js')
+
+# Replace the minified bundle with a short readable config file.
+js_pattern = re.compile(
+    r"        if p == '/static/app-config\.js':\n"
+    r"            js = b'''[\s\S]*?'''\n"
+    r"            self\.out\(js, ctype='application/javascript; charset=utf-8'\)\n"
+    r"            return\n",
+    re.M,
+)
+js_replacement = '''        if p == '/static/app-config.js':
+            js = b'''window.APP_CONFIG = {\n  apiBase: "/api/v2/",\n  consoleBase: "/administrator/",\n  consoleEntry: "login.php",\n  version: "2026.04.3"\n};\n'''
+            self.out(js, ctype='application/javascript; charset=utf-8')
+            return
+'''
+s, n = js_pattern.subn(js_replacement, s, count=1)
+if n != 1:
+    raise SystemExit('Q2 JS patch anchor not found')
+
+# Make Q4 slightly easier: after the contestant computes the local file SHA-256,
+# the matching audit row itself contains the operator and import counts.
+audit_pattern = re.compile(
+    r"        if p == '/administrator/import-audit\.php':\n[\s\S]*?"
+    r"            self\.out\(page\('导入审计', body, 'admin'\)\)\n"
+    r"            return\n",
+    re.M,
+)
+audit_replacement = '''        if p == '/administrator/import-audit.php':
+            con = sqlite3.connect(AUDIT_DB)
+            rows = con.execute('''SELECT j.job_id,j.archive_name,j.file_sha256,s.username,j.total_count,j.success_count,j.failed_count,j.state,j.finished_at FROM import_jobs j LEFT JOIN operator_sessions s ON j.upload_sid=s.session_id ORDER BY j.finished_at DESC''').fetchall()
+            con.close()
+            tr = ''.join(f'<tr><td>{html.escape(r[0])}</td><td>{html.escape(r[1])}</td><td><code>{html.escape(r[2])}</code></td><td>{html.escape(r[3] or "-")}</td><td>{r[4]}</td><td>{r[5]}</td><td>{r[6]}</td><td>{html.escape(r[7])}</td><td>{html.escape(r[8])}</td></tr>' for r in rows)
+            body = f'''<h2>客户资料导入审计</h2><p class="muted">同名文件可能存在多个版本，请以原始文件 SHA-256 核对对应导入记录。</p><table><tr><th>任务ID</th><th>文件名</th><th>SHA-256</th><th>操作账号</th><th>总数</th><th>成功</th><th>失败</th><th>状态</th><th>完成时间</th></tr>{tr}</table><div class="card"><b>审计存档</b><p>如需进一步复核，可下载原始审计数据库。</p><a href="/download/import_audit.db">下载 import_audit.db</a></div>'''
+            self.out(page('导入审计', body, 'admin'))
+            return
+'''
+s, n = audit_pattern.subn(audit_replacement, s, count=1)
+if n != 1:
+    raise SystemExit('Q4 audit patch anchor not found')
+
+p.write_text(s, encoding='utf-8')
 PY
 
 scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/target_app.py "$TARGET_HOST:/tmp/target_app.py"
@@ -35,7 +81,6 @@ scp -q -o StrictHostKeyChecking=no /tmp/remote-forensics-assets/tcp_services.py 
 
 ssh -o StrictHostKeyChecking=no "$TARGET_HOST" 'bash -s' <<'REMOTE'
 set -u
-WORKSTATION_IP="172.30.1.2"
 BASE="/srv/remote-forensics"
 mkdir -p "$BASE/landing" "$BASE/assets" /opt/remote-forensics
 systemctl mask --now kubelet >/dev/null 2>&1 || true
@@ -80,30 +125,6 @@ nohup python3 /opt/remote-forensics/target_app.py >/var/log/wh838-web.log 2>&1 <
 nohup python3 /opt/remote-forensics/tcp_services.py >/var/log/wh838-services.log 2>&1 </dev/null &
 nohup python3 -m http.server 80 --bind 0.0.0.0 --directory "$BASE/landing" >/var/log/wh838-gateway.log 2>&1 </dev/null &
 sleep 2
-
-# Hide Killercoda/base-image services from the contestant workstation without
-# stopping platform daemons. Prefer nftables and fall back to iptables.
-if command -v nft >/dev/null 2>&1; then
-  nft delete table inet remote_forensics_filter >/dev/null 2>&1 || true
-  nft -f - <<NFT
- table inet remote_forensics_filter {
-   chain input {
-     type filter hook input priority -20; policy accept;
-     ip saddr $WORKSTATION_IP tcp dport { 22, 80, 3306, 8080, 8888, 9090 } accept
-     ip saddr $WORKSTATION_IP tcp reject with tcp reset
-   }
- }
-NFT
-elif command -v iptables >/dev/null 2>&1; then
-  while iptables -D INPUT -s "$WORKSTATION_IP" -p tcp -j REJECT --reject-with tcp-reset >/dev/null 2>&1; do :; done
-  for p in 22 80 3306 8080 8888 9090; do
-    while iptables -D INPUT -s "$WORKSTATION_IP" -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1; do :; done
-  done
-  iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp -j REJECT --reject-with tcp-reset
-  for p in 22 80 3306 8080 8888 9090; do
-    iptables -I INPUT 1 -s "$WORKSTATION_IP" -p tcp --dport "$p" -j ACCEPT
-  done
-fi
 
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/00-remote-forensics.conf <<'SSHCFG'
